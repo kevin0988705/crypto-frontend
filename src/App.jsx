@@ -20,11 +20,13 @@ const INTERVALS = [
 export default function App() {
   const [interval, setIntervalVal] = useState("4h");
   const [symbolInput, setSymbolInput] = useState(DEFAULT_SYMBOLS.join(","));
+  const [mode, setMode] = useState("top100"); // "top100" | "custom"
   const [results,  setResults]  = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [expanded, setExpanded] = useState(null);
   const [filter,   setFilter]   = useState("all");
   const [lastScan, setLastScan] = useState(null);
+  const [scannedCount, setScannedCount] = useState(0);
   const [error,    setError]    = useState(null);
   const [showCfg,  setShowCfg]  = useState(false);
   const [statusMsg, setStatusMsg] = useState(null);
@@ -41,16 +43,21 @@ export default function App() {
     }
   }
 
-  async function runScan(iv = interval, syms = symbolInput, attempt = 1) {
+  async function runScan(iv = interval, syms = symbolInput, scanMode = mode, attempt = 1) {
     setLoading(true);
     setError(null);
-    setStatusMsg(attempt === 1 ? "連線後端中…（免費方案可能需要喚醒，請耐心等候）" : `重試中（第 ${attempt} 次）…`);
+    setStatusMsg(attempt === 1
+      ? (scanMode === "top100" ? "連線後端中…（合約交易量前100名，首次掃描約需30-90秒）" : "連線後端中…（免費方案可能需要喚醒，請耐心等候）")
+      : `重試中（第 ${attempt} 次）…`);
     try {
-      const url = `${API_BASE}/scan?symbols=${encodeURIComponent(syms)}&interval=${iv}`;
-      const res = await fetchWithTimeout(url, 60000); // 60秒逾時，喚醒+掃描都算進去
+      const url = scanMode === "top100"
+        ? `${API_BASE}/scan?top=100&interval=${iv}`
+        : `${API_BASE}/scan?symbols=${encodeURIComponent(syms)}&interval=${iv}`;
+      const res = await fetchWithTimeout(url, 90000); // top100 量較大，拉長到90秒
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setResults(data.results || []);
+      setScannedCount(data.scanned || data.total || 0);
       setLastScan(new Date().toLocaleTimeString("zh-TW"));
       setStatusMsg(null);
     } catch (e) {
@@ -60,12 +67,12 @@ export default function App() {
       if ((isAbort || isNetwork) && attempt < 3) {
         // 自動重試，通常第一次是在喚醒 Render 休眠的容器
         setStatusMsg(`後端可能正在喚醒，10 秒後自動重試（第 ${attempt + 1}/3 次）…`);
-        setTimeout(() => runScan(iv, syms, attempt + 1), 10000);
+        setTimeout(() => runScan(iv, syms, scanMode, attempt + 1), 10000);
         return;
       }
 
       setError(
-        isAbort ? "連線逾時（超過60秒），後端可能無回應，請稍後再按「重新掃描」"
+        isAbort ? "連線逾時，後端可能無回應，請稍後再按「重新掃描」"
         : isNetwork ? "無法連線到後端，請確認網址正確、Render 服務狀態為 Live"
         : e.message
       );
@@ -125,11 +132,26 @@ export default function App() {
         </p>
       </div>
 
+      {/* Mode toggle */}
+      <div style={{ display:"flex", justifyContent:"center", gap:8, marginBottom:12 }}>
+        {[["top100","🏆 合約交易量 前100名"],["custom","✏️ 自訂幣種"]].map(([v,l]) => (
+          <button key={v}
+            onClick={() => { setMode(v); runScan(interval, symbolInput, v); }}
+            style={{ padding:"6px 16px", borderRadius:20,
+              border:`1px solid ${mode===v?"#00897b":"#1a2035"}`,
+              background: mode===v?"#00695c22":"transparent",
+              color: mode===v?"#4dd0e1":"#37474f",
+              cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:600 }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
       {/* Controls */}
       <div style={{ display:"flex", flexWrap:"wrap", gap:8, justifyContent:"center", marginBottom:14 }}>
         {INTERVALS.map(iv => (
           <button key={iv.value}
-            onClick={() => { setIntervalVal(iv.value); runScan(iv.value, symbolInput); }}
+            onClick={() => { setIntervalVal(iv.value); runScan(iv.value, symbolInput, mode); }}
             style={{ padding:"7px 16px", borderRadius:6,
               border:`1px solid ${interval===iv.value?"#5c6bc0":"#1a2035"}`,
               background: interval===iv.value?"#1a2040":"transparent",
@@ -138,7 +160,7 @@ export default function App() {
             {iv.label}
           </button>
         ))}
-        <button onClick={() => runScan()} disabled={loading} style={S.btn(true)}>
+        <button onClick={() => runScan(interval, symbolInput, mode)} disabled={loading} style={S.btn(true)}>
           {loading ? (
             <span style={{ display:"flex", alignItems:"center", gap:7 }}>
               <span style={{ display:"inline-block", width:11, height:11,
@@ -148,11 +170,13 @@ export default function App() {
             </span>
           ) : "🔄 重新掃描"}
         </button>
-        <button onClick={() => setShowCfg(!showCfg)} style={S.btn(false)}>⚙️ 幣種設定</button>
+        {mode === "custom" && (
+          <button onClick={() => setShowCfg(!showCfg)} style={S.btn(false)}>⚙️ 幣種設定</button>
+        )}
       </div>
 
       {/* Config panel */}
-      {showCfg && (
+      {showCfg && mode === "custom" && (
         <div style={{ maxWidth:680, margin:"0 auto 16px", background:"#0c111e",
           border:"1px solid #1a2035", borderRadius:10, padding:"14px 16px" }}>
           <div style={{ fontSize:11, color:"#546e7a", marginBottom:8 }}>
@@ -162,14 +186,15 @@ export default function App() {
             style={{ width:"100%", minHeight:70, background:"#060810", border:"1px solid #1a2035",
               borderRadius:6, color:"#90a4ae", fontSize:12, padding:"8px 10px",
               fontFamily:"inherit", resize:"vertical", boxSizing:"border-box" }}/>
-          <button onClick={() => runScan(interval, symbolInput)}
+          <button onClick={() => runScan(interval, symbolInput, "custom")}
             style={{ ...S.btn(true), marginTop:8 }}>套用並重新掃描</button>
         </div>
       )}
 
       {lastScan && !loading && (
         <div style={{ textAlign:"center", fontSize:10, color:"#263238", marginBottom:14 }}>
-          上次掃描 {lastScan} · {INTERVALS.find(i=>i.value===interval)?.label} · 共 {results.length} 個結果
+          上次掃描 {lastScan} · {INTERVALS.find(i=>i.value===interval)?.label} ·
+          掃描 {scannedCount} 個幣種 · 共 {results.length} 個有效結果
         </div>
       )}
 
